@@ -1,0 +1,192 @@
+--Understanding the concept of External table
+--Partioning in external table
+--Auto ingset in exernal table
+--Working with semi-structured data like parquet and csv
+
+--s3://snowflake-s3-ext-stage-naman/customer/ --> path of the public s3 bucket I created 
+--arn:aws:iam::533432413482:role/snowflake-access-role --> created the role having full s3 access
+
+--set the context
+use role accountadmin;
+
+create database tipsdb;
+create schema ch11;
+
+--creating a storage integration for secure access
+create storage integration s3_external_int
+ type = external_stage
+ storage_provider = 'S3'
+ enabled = true
+ storage_aws_role_arn = 'arn:aws:iam::533432413482:role/snowflake-access-role'
+ storage_allowed_locations = ('s3://snowflake-s3-ext-stage-naman/customer/');
+
+--desc the integration to get STORAGE_AWS_IAM_USER_ARN and STORAGE_AWS_EXTERNAL_ID
+desc integration s3_external_int;
+--storage_aws_iam_user_arn: arn:aws:iam::946707330105:user/tnsz0000-s
+--storage_aws_external_id: UBB85975_SFCRole=2_eSjTvCRt0++n26XzsX2xLZ3zq/U=
+
+--put these into the trust relationship policy to connect with snowflake
+
+--lets create external stage with s3 bucket
+create or replace stage s3_customer_csv
+storage_integration = s3_external_int
+ url = 's3://snowflake-s3-ext-stage-naman/customer/csv/';
+
+
+--desc the stage and validate the definition
+desc stage s3_customer_csv;
+
+--list the files inside the stage we created
+list @s3_customer_csv;
+
+--create a csv file format
+create  or replace file format csv_ff
+type = 'csv' --file is csv type
+compression = 'auto' -- it will automatically fetch the compression type(GZIP,BZIP2)
+field_delimiter = ',' // tells columns are separated by comma
+record_delimiter = '\n' //tells each row ends with new line
+skip_header = 1 //tells there is no header
+field_optionally_enclosed_by = '\042' // \042 is the ASCII code for double quote ("), in octal.
+null_if = ('\\N'); //Tells Snowflake to treat the string \N (backslash + N) as a NULL value.
+
+--lets query the external stage without creating any table
+--this can be done using $ notation
+SELECT t.$1, t.$2, t.$3, t.$4, t.$5, t.$6, t.$7, t.$8
+FROM @TIPSDB.CH11.S3_CUSTOMER_CSV/customer_data_1.csv (FILE_FORMAT => 'csv_ff') t;
+
+--what if you give an extra column like $9 => query will run but it will give null value
+SELECT t.$1, t.$2, t.$3, t.$4, t.$5, t.$6, t.$7, t.$8, t.$9
+FROM @TIPSDB.CH11.S3_CUSTOMER_CSV/customer_data_1.csv (FILE_FORMAT => 'csv_ff') t;
+
+--now create an external table
+create or replace external table customer_csv_et (
+CUST_KEY varchar AS (value:c1::varchar),
+NAME varchar AS (value:c2::varchar),
+ADDRESS varchar AS (value:c3::varchar),
+NATION_KEY varchar AS (value:c4::varchar),
+PHONE varchar AS (value:c5::varchar),
+ACCOUNT_BALANCE varchar AS (value:c6::varchar),
+MARKET_SEGMENT varchar AS (value:c7::varchar),
+COMMENT varchar AS (value:c8::varchar)
+)
+with location = @s3_customer_csv
+auto_refresh = false
+file_format = (format_name = csv_ff);
+
+--selecting the external table.
+select * from customer_csv_et;
+
+--Note :- there will be an extra column called value in json format which will show all the column and values in json.
+// every external table will have a value field(variant type) & metadata$filename field
+
+select value, metadata$filename from customer_csv_et;
+
+--describing external table in two ways:
+desc external table customer_csv_et type = 'column'; //same as normal table
+desc external table customer_csv_et type = 'stage'; //give all the properties of the stage from which it is associated
+
+create storage integration s3_external_int_1
+ type = external_stage
+ storage_provider = 'S3'
+ enabled = true
+ storage_aws_role_arn = 'arn:aws:iam::533432413482:role/snowflake-access-role'
+ storage_allowed_locations = ('s3://snowflake-s3-ext-stage-naman/');
+
+ desc integration s3_external_int_1;
+ --arn:aws:iam::946707330105:user/tnsz0000-s
+--UBB85975_SFCRole=2_RXQcrDahfEQZ81RoUNsgeqzTNy8=
+
+--auto-ingest concept
+--we are also creating event notification SQS for this particular folder in aws so snowflake will take than notification and insert and delete in real time.
+create or replace stage s3_customer_stream_demo
+storage_integration = s3_external_int_1
+ url = 's3://snowflake-s3-ext-stage-naman/customer_stream_demo/';
+
+ list @s3_customer_stream_demo;
+
+ --creating external table with auto refresh flag true
+ create or replace external table customer_stream_demo (
+CUST_KEY varchar AS (value:c1::varchar),
+NAME varchar AS (value:c2::varchar),
+ADDRESS varchar AS (value:c3::varchar),
+NATION_KEY varchar AS (value:c4::varchar),
+PHONE varchar AS (value:c5::varchar),
+ACCOUNT_BALANCE varchar AS (value:c6::varchar),
+MARKET_SEGMENT varchar AS (value:c7::varchar),
+COMMENT varchar AS (value:c8::varchar)
+)
+with location = @s3_customer_stream_demo
+auto_refresh = true
+file_format = (format_name = csv_ff);
+
+--use show function to get the ARN
+show external tables;
+--put the ARN into the SQS service
+
+select count(*) from customer_stream_demo;
+
+--check the history fucntion to know how many files are there
+select * from table(information_schema.EXTERNAL_TABLE_FILES(table_name=>'customer_stream_demo'));
+
+--External Table functions
+--if auto-ingest is on, you can check the queue and pending files
+select system$external_table_pipe_status('customer_stream_demo');
+
+--check the history function to know how many files are there
+select * from table(information_schema.external_table_files(table_name=>'customer_stream_demo'));
+
+--retreive the metadata stored for all data files refrenced by the external table
+select * from table(information_schema.external_table_file_registration_history(table_name=>'customer_stream_demo'));
+
+
+
+--Now understanfing semi-structured data like parquet and ORC
+create or replace stage s3_customer_parquet
+storage_integration = s3_external_int_1
+ url = 's3://snowflake-s3-ext-stage-naman/customer/parquet/'
+ file_format = (type = 'parquet' compression='snappy')
+ comment = 'this customer parquet data stage with file format attached to it';
+
+ --list the files
+ list @s3_customer_parquet;
+
+--desc the stage to validate the file format
+desc stage s3_customer_parquet;
+
+--for any semi-structured data there is only 1 column that is $1
+select * from @s3_customer_parquet;
+
+--get all the file names
+select metadata$filename from @s3_customer_parquet;
+
+--this will not work as it is case sensitive
+select $1:CUST_KEY from @s3_customer_parquet;
+
+select $1:Cust_key from @s3_customer_parquet;
+
+select $1:Cust_key::varchar,
+$1:account_balance::varchar,
+$1:address::varchar,
+$1:comment::varchar,
+$1:market_segment::varchar,
+$1:name::varchar,
+$1:nation_key::varchar,
+$1:phone::varchar
+from @s3_customer_parquet;
+
+ --creating external table of semi-structured data
+ --don't follow the c1 or c2 approach
+ create or replace external table customer_par_ff (
+CUST_KEY varchar AS ($1:Cust_key::varchar),
+NAME varchar AS ($1:name::varchar),
+ADDRESS varchar AS ($1:address::varchar),
+NATION_KEY varchar AS ($1:nation_key::varchar),
+PHONE varchar AS ($1:phone::varchar),
+ACCOUNT_BALANCE varchar AS ($1:account_balance::varchar),
+MARKET_SEGMENT varchar AS ($1:market_segment::varchar),
+COMMENT varchar AS ($1:comment::varchar)
+)
+with location = @s3_customer_parquet
+auto_refresh = true
+file_format = (type = 'parquet');
+-- Note:- ORC format also work the same way
