@@ -190,3 +190,21 @@ with location = @s3_customer_parquet
 auto_refresh = true
 file_format = (type = 'parquet');
 -- Note:- ORC format also work the same way
+
+
+--Can we have cluster key for external table
+create or replace external table customer_csv_et (
+CUST_KEY varchar AS (value:c1::varchar),
+NAME varchar AS (value:c2::varchar),
+ADDRESS varchar AS (value:c3::varchar),
+NATION_KEY varchar AS (value:c4::varchar),
+PHONE varchar AS (value:c5::varchar),
+ACCOUNT_BALANCE varchar AS (value:c6::varchar),
+MARKET_SEGMENT varchar AS (value:c7::varchar),
+COMMENT varchar AS (value:c8::varchar)
+)
+cluster by (NATION_KEY)
+with location = @s3_customer_csv
+auto_refresh = false
+file_format = (format_name = csv_ff);
+ //external table does not have cluster key and it support only partition key
