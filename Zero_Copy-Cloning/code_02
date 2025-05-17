@@ -1,0 +1,265 @@
+use role sysadmin;
+use database tipsdb;
+create schema ch15;
+
+-- step - 1:Create a simple-order table
+create or replace table simple_order(
+orderkey number(38,0),
+custkey number(38,0),
+orderstatus varchar(1),
+totalprice number(12,2),
+orderdate date,
+orderpriority varchar(15)
+);
+
+--lets populate some thousant rows in this table
+insert into simple_order (orderkey,custkey,orderstatus,totalprice,orderdate,orderpriority)
+select o_orderkey, o_custkey, o_orderstatus, o_totalprice, o_orderdate, o_orderpriority
+from snowflake_sample_data.tpch_sf1.orders order by o_orderkey limit 100000;
+
+--lets validate
+select * from simple_order limit 10;
+
+-- step - 2
+-- before we clone the table lets perform one delete operation
+-- so we can validate time travel feature along side clone
+
+delete from simple_order where orderkey between 30 and 40; -- 8 records deleted
+-- Query ID => 01bc60d3-0305-47d4-0008-bc7b0004008a
+
+-- now we will create a table called simple_order_clone using clone keyword
+create table simple_order_clone clone simple_order;
+
+-- lets the table count in both tables
+select count(*) from simple_order;
+select count(*) from simple_order_clone;
+
+-- Step - 3
+-- is it zero copy clone ?
+-- to identify that, we need to check information-schema's table data set
+select * from tipsdb.information_schema.tables where table_name In ('SIMPLE_ORDER','SIMPLE_ORDER_CLONE') and table_schema = 'CH15';
+
+--lets check bytes field in table storage metrics view
+--to access account usage, we have to switch to account admin role
+ use role accountadmin;
+
+ select * from SNOWFLAKE.ACCOUNT_USAGE.TABLE_STORAGE_METRICS
+ where table_schema = 'CH15' and table_name IN ('SIMPLE_ORDER','SIMPLE_ORDER_CLONE') limit 10;
+ --Snowflake uses zero-copy cloning. So until you insert/update/delete rows in the cloned table, it consumes 0 bytes of storage.
+
+ -- Step-4
+ -- Now change both the tables independently and see how it behaves
+ -- as we start operating in these tables
+
+ use role sysadmin;
+ insert into simple_order (orderkey,custkey,orderstatus,totalprice,orderdate,orderpriority)
+select o_orderkey, o_custkey, o_orderstatus, o_totalprice, o_orderdate, o_orderpriority
+from snowflake_sample_data.tpch_sf1.orders order by o_orderkey limit 1000;
+
+-- for debugging purpose we are making some update in simple-order-clone table
+update simple_order_clone set orderpriority = '1-URGENT' where orderkey < 100000 and orderpriority <> '1-URGENT';
+
+--now check the information schema and account usage table
+select * from tipsdb.information_schema.tables where table_name In ('SIMPLE_ORDER','SIMPLE_ORDER_CLONE') and table_schema = 'CH15';
+
+--lets check bytes field in table storage metrics view
+--to access account usage, we have to switch to account admin role
+ use role accountadmin;
+
+ select * from SNOWFLAKE.ACCOUNT_USAGE.TABLE_STORAGE_METRICS
+ where table_schema = 'CH15' and table_name IN ('SIMPLE_ORDER','SIMPLE_ORDER_CLONE') limit 10;
+
+-- now the simple order clone will display as there is some update is done.
+-- this change will only be captured within cloned object and not on the source table.
+
+
+-------------------------------------------------------------------------------
+
+//lets see how clone works for transient and temporary table
+
+//step -1 create a transient table 
+create or replace transient table trans_order(
+orderkey number(38,0),
+custkey number(38,0),
+orderstatus varchar(1),
+totalprice number(12,2),
+orderdate date,
+orderpriority varchar(15)
+);
+
+--lets populate some thousand rows in this table
+insert into trans_order (orderkey,custkey,orderstatus,totalprice,orderdate,orderpriority)
+select o_orderkey, o_custkey, o_orderstatus, o_totalprice, o_orderdate, o_orderpriority
+from snowflake_sample_data.tpch_sf1.orders order by o_orderkey limit 100;
+
+--lets validate
+select * from trans_order limit 10;
+
+--now checking if we can make a clone permanent table using transient table
+create table trans_order_cloned clone trans_order;
+//002120 (0A000): SQL compilation error: Transient object cannot be cloned to a permanent object.
+
+create transient table trans_order_cloned clone trans_order;
+show tables like 'trans%';
+--so we can make a clone transient table using transient table
+
+--Now checking how temporary table works
+create temporary table temp_order(
+orderkey number(38,0),
+custkey number(38,0),
+orderstatus varchar(1),
+totalprice number(12,2),
+orderdate date,
+orderpriority varchar(15)
+);
+
+--lets populate some 100 rows in this table
+insert into temp_order (orderkey,custkey,orderstatus,totalprice,orderdate,orderpriority)
+select o_orderkey, o_custkey, o_orderstatus, o_totalprice, o_orderdate, o_orderpriority
+from snowflake_sample_data.tpch_sf1.orders order by o_orderkey limit 100;
+
+--temp table cannot make a permanent table clone
+create table perm_table clone temp_order;
+
+--however transient table can be created using temp table
+create transient table temp_order_cloned clone temp_order;
+
+--but if we clone temp table to a temp table it will work
+create temporary table temp_order_clone_1 clone temp_order;
+
+show tables like 'temp%';
+
+--can I create transient or temporary table using permanent table ?
+create transient table permanent_to_trans clone simple_order;
+create temporary table permanent_to_temp clone simple_order;
+
+show tables like 'perm%';
+
+----------------------------------------------------------------------------
+//Check the Object dependency with
+--Step - 1
+-- Let's create a sequence object so it can be used as identify column
+create or replace sequence even_seq
+start 2
+increment 2
+comment = 'This is my demo sequence';
+
+--step - 2
+--now we are creating a table having dependency on the sequence object
+create or replace table order_with_seq(
+id_seq number default even_seq.nextval,
+orderkey number(38,0),
+custkey number(38,0),
+orderstatus varchar(1),
+totalprice number(12,2),
+orderdate date,
+orderpriority varchar(15)
+);
+
+--lets populate some rows
+insert into order_with_seq (orderkey,custkey,orderstatus,totalprice,orderdate,orderpriority)
+select o_orderkey, o_custkey, o_orderstatus, o_totalprice, o_orderdate, o_orderpriority
+from snowflake_sample_data.tpch_sf1.orders order by o_orderkey limit 100;
+
+--lets validate
+select * from order_with_seq limit 10;
+
+--now lets make a clone and see the behaviour
+create table order_seq_clone clone order_with_seq;
+
+--lets check what happens to sequence object
+select get_ddl('table','order_seq_clone');
+--it has got the same sequence object
+
+--now lets check how the insert work on clone table
+insert into order_seq_clone (orderkey,custkey,orderstatus,totalprice,orderdate,orderpriority)
+select o_orderkey, o_custkey, o_orderstatus, o_totalprice, o_orderdate, o_orderpriority
+from snowflake_sample_data.tpch_sf1.orders order by o_orderkey limit 50;
+
+--so it will have a amx id = 300
+select * from order_seq_clone;
+
+--Following objects cannot be cloned:
+--1. External Tables
+--2. Internal Stages
+
+-------------------------------------------------------------
+--lets clone sequence and file formats and see how it works
+create or replace file format csv_ff
+type = 'csv'
+compression = 'auto'
+field_delimiter = ','
+record_delimiter = '\n'
+skip_header = 0
+field_optionally_enclosed_by = '\042'
+trim_space = false
+error_on_column_count_mismatch = true;
+
+show file formats;
+create file format csv_ff_clone clone csv_ff;
+
+show sequences;
+create or replace sequence even_seq_clone clone even_seq;
+
+select even_seq_clone.nextval, even_seq.nextval;
+
+--change the increment value and rerun the next value
+alter sequence even_seq_clone set increment = 3;
+
+select even_seq_clone.nextval, even_seq.nextval;
+
+-----------------------------------------------------------------------------------------------------------------------------------
+--Checking the cloning with stream
+--step - 1
+-- create a table
+create or replace table order_tbl(
+orderkey number(38,0),
+custkey number(38,0),
+orderstatus varchar(1),
+totalprice number(12,2),
+orderdate date,
+orderpriority varchar(15)
+);
+
+--lets populate 100 rows in this table 
+insert into order_tbl (orderkey,custkey,orderstatus,totalprice,orderdate,orderpriority)
+select o_orderkey, o_custkey, o_orderstatus, o_totalprice, o_orderdate, o_orderpriority
+from snowflake_sample_data.tpch_sf1.orders order by o_orderkey limit 100;
+
+--create a stream object
+--it captures all the insert, update and delete operation as a CDC
+create stream stream_order_tbl on table order_tbl;
+
+--inserting additional 10 records to check the stream
+insert into order_tbl (orderkey,custkey,orderstatus,totalprice,orderdate,orderpriority)
+select o_orderkey, o_custkey, o_orderstatus, o_totalprice, o_orderdate, o_orderpriority
+from snowflake_sample_data.tpch_sf1.orders order by o_orderkey limit 10;
+
+select * from stream_order_tbl;
+
+create stream stream_order_tbl_clone clone stream_order_tbl;
+
+select * from stream_order_tbl_clone;
+
+show streams like 'stream%';
+----------------------------------------------------------------------------
+--Now let's see how the clone works in the task
+create or replace task task_ch15
+    warehouse = compute_wh
+    schedule = '60 minute'
+        as
+    select current_user();
+
+--resume the task
+alter task task_ch15 suspend;
+
+show tasks;
+
+--lets clone the task and how it works
+create task task_ch15_clone clone task_ch15;
+--this cloned task is suspended we have to resume it explicitly
+
+show tasks;
+
+--Note:
+--If we clone the database it will then clone everything like schema, tables, views, pipe, stages, file formats, streams and tasks.
