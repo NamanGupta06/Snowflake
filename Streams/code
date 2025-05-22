@@ -1,0 +1,228 @@
+--Stream is used to capture the data change 
+--For tracking it uses an offset mechanism
+--It add three additional fields(CDC Tracker Metadata Fields) on top of the source table to track all the DML changes
+--1. Metadata$action
+--2. Metadata$IsUpdate
+--3. Metadata$RowID
+
+
+--Stream is an object under the schema and create on the top of the permanent table, transient table, temporary table or external table
+
+--Syntax:
+-- create or replace stream 
+-- my_stream
+-- on table Customer;
+-- With this statement all the insert, update, delete and truncate command is captured
+
+--Types of Streams:-
+-- 1. Append only stream
+-- create or replace stream 
+-- my_stream
+-- on table Customer
+-- append_only = true;
+-- It will tell snowflake to capture the change when there is an insert operation.
+
+-- 2. Insert only stream
+-- create or replace stream 
+-- my_stream
+-- on table
+-- external Customer
+-- insert_only = true;
+-- It is also similar to append but it is used for external tables.
+
+--Fact:-
+-- Multiple streams can be created on a single source table.
+-- stream object can be cloned
+-- Stream does not hold the whole data from the source data it just holds the offset.
+
+--Now creating a customer table as a source table 
+use database tipsdb;
+create schema ch17;
+--Any DML operation on this table will be tracked by the stream object
+create or replace table customer(
+    id number,
+    first_name varchar,
+    last_name varchar,
+    date_of_birbh date,
+    active_flag boolean,
+    city varchar
+);
+
+--Inserting some records
+insert into customer values
+(1, 'Joan', 'Luk', '3/15/2003', TRUE, 'New York'),
+(2, 'Patrick', 'Renard', '4/29/2003', FALSE, 'Los Angeles'),
+(3, 'Sim', 'Rose', '8/25/2008', TRUE, 'Chicago'),
+(4, 'Lila', 'Vis', '9/19/1997', TRUE, 'Miami'),
+(5, 'Charlie', 'Cook', '3/19/2003', FALSE, 'Dallas'),
+(6, 'Ryan', 'Clark', '4/13/2003', TRUE, 'Philadelphia'),
+(7, 'Davis', 'Bashful', '2/15/2003', TRUE, 'Houston'),
+(8, 'Nalty', 'Mason', '3/21/2003', TRUE, 'Atlanta'),
+(9, 'Quinn', 'Ris', '8/13/1997', TRUE, 'Washington'),
+(10, 'White', 'Klein', '1/21/2003', TRUE, 'Boston');
+
+--validating the records
+select * from customer;
+
+--craeting the stream object on the source table
+create or replace stream 
+customer_stream
+on table
+tipsdb.CH17.customer;
+
+Select * from customer_stream;
+--There are not records as of now as no operations are performed.
+
+--Now lets perform some DML operations 
+--Inserting 2 records
+insert into customer values
+(11, 'Irwin', 'Chuk', '3/15/2000', TRUE, 'San Jose'),
+(12, 'Daniel', 'Jiw', '4/29/2000', TRUE, 'New York');
+
+select * from customer_stream;
+Select * from customer;
+
+--Now delete a row
+delete from customer where ID = 9;
+
+select * from customer_stream;
+Select * from customer;
+
+--Updating two records
+update customer set city = 'New Jersey' where id = 3;
+update customer set active_flag = 'TRUE' where id = 5;
+
+--Important Note:- Each update is stored as two rows in stream object, old row is deleted and new row with update is inserted
+
+select * from customer_stream;
+Select * from customer;
+
+--how to see stream info
+
+--check the context
+select current_database(), current_schema();
+
+show streams;
+
+desc stream customer_stream;
+
+Select get_ddl('stream','customer_stream');
+
+--run alter command
+alter stream customer_stream set comment = 'my stream on customer table have 14 days CDC period';
+
+desc stream customer_stream;
+
+alter stream customer_stream unset comment;
+desc stream customer_stream;
+
+drop stream customer_stream
+--Unlike table, stream have no fail safe & time travel feature
+;
+
+--Now we are trying to craete one more stream on customer table
+create stream customer_stream_02 
+on table 
+customer
+comment ='This is my second stream';
+
+show streams;
+
+--inserting two new records to check the new stream
+insert into customer values
+(13, 'Irwin-01', 'Chuk', '3/15/2000', TRUE, 'San Jose'),
+(14, 'Daniel-01', 'Jiw', '4/29/2000', TRUE, 'New York');
+
+select * from customer_stream_02;
+-------------------------------------------------------------------------------------------------------
+--Now we will check how append only stream words
+create or replace table append_only_customer(
+    id number,
+    first_name varchar,
+    last_name varchar,
+    date_of_birbh date,
+    active_flag boolean,
+    city varchar
+);
+
+--Inserting 10 records
+insert into append_only_customer values
+(1, 'Joan', 'Luk', '3/15/2003', TRUE, 'New York'),
+(2, 'Patrick', 'Renard', '4/29/2003', FALSE, 'Los Angeles'),
+(3, 'Sim', 'Rose', '8/25/2008', TRUE, 'Chicago'),
+(4, 'Lila', 'Vis', '9/19/1997', TRUE, 'Miami'),
+(5, 'Charlie', 'Cook', '3/19/2003', FALSE, 'Dallas'),
+(6, 'Ryan', 'Clark', '4/13/2003', TRUE, 'Philadelphia'),
+(7, 'Davis', 'Bashful', '2/15/2003', TRUE, 'Houston'),
+(8, 'Nalty', 'Mason', '3/21/2003', TRUE, 'Atlanta'),
+(9, 'Quinn', 'Ris', '8/13/1997', TRUE, 'Washington'),
+(10, 'White', 'Klein', '1/21/2003', TRUE, 'Boston');
+
+--validating eh records
+select * from append_only_customer;
+
+--creating append only stream
+create stream append_customer_stream
+on table
+append_only_customer
+append_only = TRUE;
+
+select * from append_customer_stream;
+
+--inserting two new records
+insert into append_only_customer values
+(11, 'Irwin', 'Chuk', '3/15/2000', TRUE, 'San Jose'),
+(12, 'Daniel', 'Jiw', '4/29/2000', TRUE, 'New York');
+
+select * from append_customer_stream;
+
+--Now checking if it si tracking the delete or not
+delete from append_only_customer where id = 9;
+
+select * from append_customer_stream;
+--Note:- it just traacks the new arrival records and doesn't track the updates and deleteions.
+
+--
+show streams;
+--check the mode it will show append_only for the append_only stream and default for the standard stream.
+
+
+--------------------------------------------------------------------------------------------------------------
+--Now we will check if we can creata stream on transient table
+create or replace transient table customer_transient(
+    id number,
+    first_name varchar,
+    last_name varchar,
+    date_of_birbh date,
+    active_flag boolean,
+    city varchar
+);
+
+--Inserting some records
+insert into customer_transient values
+(1, 'Joan', 'Luk', '3/15/2003', TRUE, 'New York'),
+(2, 'Patrick', 'Renard', '4/29/2003', FALSE, 'Los Angeles'),
+(3, 'Sim', 'Rose', '8/25/2008', TRUE, 'Chicago'),
+(4, 'Lila', 'Vis', '9/19/1997', TRUE, 'Miami'),
+(5, 'Charlie', 'Cook', '3/19/2003', FALSE, 'Dallas'),
+(6, 'Ryan', 'Clark', '4/13/2003', TRUE, 'Philadelphia'),
+(7, 'Davis', 'Bashful', '2/15/2003', TRUE, 'Houston'),
+(8, 'Nalty', 'Mason', '3/21/2003', TRUE, 'Atlanta'),
+(9, 'Quinn', 'Ris', '8/13/1997', TRUE, 'Washington'),
+(10, 'White', 'Klein', '1/21/2003', TRUE, 'Boston');
+
+--lets create a stream to track the changes
+create or replace stream transient_stream
+on table
+customer_transient;
+
+Select * from transient_stream;
+
+insert into customer_transient values
+(11, 'Irwin', 'Chuk', '3/15/2000', TRUE, 'San Jose'),
+(12, 'Daniel', 'Jiw', '4/29/2000', TRUE, 'New York');
+
+Select * from transient_stream;
+
+--stream also works fine on transient table as will
+--also stream can be created on external table
