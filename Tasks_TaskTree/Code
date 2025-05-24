@@ -1,0 +1,354 @@
+create or replace table customer(
+    id number,
+    first_name varchar,
+    last_name varchar,
+    date_of_birbh date,
+    active_flag boolean,
+    city varchar
+);
+
+--Inserting some records
+insert into customer values
+(1, 'Joan', 'Luk', '3/15/2003', TRUE, 'New York'),
+(2, 'Patrick', 'Renard', '4/29/2003', FALSE, 'Los Angeles'),
+(3, 'Sim', 'Rose', '8/25/2008', TRUE, 'Chicago'),
+(4, 'Lila', 'Vis', '9/19/1997', TRUE, 'Miami'),
+(5, 'Charlie', 'Cook', '3/19/2003', FALSE, 'Dallas'),
+(6, 'Ryan', 'Clark', '4/13/2003', TRUE, 'Philadelphia'),
+(7, 'Davis', 'Bashful', '2/15/2003', TRUE, 'Houston'),
+(8, 'Nalty', 'Mason', '3/21/2003', TRUE, 'Atlanta'),
+(9, 'Quinn', 'Ris', '8/13/1997', TRUE, 'Washington'),
+(10, 'White', 'Klein', '1/21/2003', TRUE, 'Boston');
+
+--Task is a first class object residing within the schema 
+--Standard task - DDL
+--Syntax
+-- create or replace task
+-- my_task
+-- warehouse = 'compute_wh'
+-- schedule = '1 minute' // this is a non-CRON based syntax
+-- as 
+-- insert into customer_dim.......
+
+-- Note:- Task only allows a single statement to run like the above or you can call a stored procedure. If you want to run multiple sql statement then wrap all of them in the stored procedure and then call it.
+
+-- create or replace task
+-- my_task
+-- warehouse = 'compute_wh'
+-- schedule = '1 minute' // this is a non-CRON based syntax
+-- as 
+-- call stored_proc_name();
+
+--Syntax for CRON based scheduling
+-- create or replace task
+-- my_task
+-- warehouse = 'compute_wh'
+-- schedule = 'Using CRON 5***SUN America/LosAngeles'  // this is a CRON based syntax it means 5th miniute of every hour on sunday
+-- as 
+-- insert into customer_dim........
+
+--Serverless Task - DDL
+--This is used when you don't want to have user defined warehouse
+-- create or replace task
+-- my_task
+-- user_task_managed_inital_warehouse_size = 'XSMALL'
+-- schedule = '1 minute'
+-- as
+-- insert into customer_dim........
+
+-- Note:- it will start with XSMALL and if it need more capacity it will change the warehouse size.
+
+--setting the context
+use database tipsdb;
+create schema CH18;
+
+--creating a customer dimension table
+create or replace table customer_dim(
+    id number,
+    first_name varchar,
+    last_name varchar,
+    date_of_birbh date,
+    active_flag boolean,
+    city varchar,
+    insert_time timestamp default current_timestamp()
+);
+
+--lets create a sequence object
+create or replace sequence customer_seq
+start 2
+increment 2
+comment = 'my demo sequence for customer dimension table';
+
+--now creating task
+create or replace task
+task_01
+warehouse = 'COMPUTE_WH'
+schedule = '1 minute'
+as 
+insert into customer_dim(id, first_name, last_name, date_of_birbh, active_flag, city)
+values(customer_seq.nextval, 'F-name','L-name' ,current_date() ,TRUE ,'My-City');
+
+--Limitations
+--1. If you try to have more than one SQL statement, task will throw an error
+--2. Schedule parameter only takes minutes, not seconds or hours.
+--3. The minimum number is 1 minute and you cannot go below this number
+--4. Once task is created it is in suspended state
+
+select * from customer_dim;
+
+--lets show task
+show tasks;
+
+desc task task_01;
+
+--to resume the task we have to switch the role to accountadmin
+--or we have to give execute grant command
+use role ACCOUNTADMIN;
+ALTER TASK TASK_01 RESUME;
+
+--again switching back to the rule;
+use role sysadmin;
+
+--how to check if it is running
+--we have task_history() is a table function
+select * from table(information_schema.task_history()) where name = 'TASK_01' order by scheduled_time;
+
+-- Since we have the privilege issue for the sysadmin we will swtich to accountadmin and grant privileges to the sysadmin role
+use role accountadmin;
+grant execute task, execute managed task on account to role sysadmin;
+
+use role sysadmin;
+
+select * from table(information_schema.task_history()) where name = 'TASK_01' order by scheduled_time;
+
+show tasks; --the task is suspended
+alter task Task_01 resume;
+
+select * from customer_dim;
+
+alter task Task_01 suspend;
+
+--So now lets understand for how much time we can schedule the task
+create or replace task task_5000
+warehouse = compute_wh
+schedule = '5000 minute'
+as 
+insert into customer_dim(id, first_name, last_name, date_of_birbh, active_flag, city)
+values(customer_seq.nextval, 'F-name','L-name' ,current_date() ,TRUE ,'My-City');
+
+--drop the task
+drop task task_5000;
+
+--The maximum support number is 8 days i.e. 11520 minutes
+create or replace task task_5000
+warehouse = compute_wh
+schedule = '11521 minute'
+as 
+insert into customer_dim(id, first_name, last_name, date_of_birbh, active_flag, city)
+values(customer_seq.nextval, 'F-name','L-name' ,current_date() ,TRUE ,'My-City');
+-- It throws the error
+-- Cannot set schedule greater than 11,520 minutes.
+
+show tasks;
+
+--Now understand how the CRON scheduling works
+//---------------- minute(0-59)
+//| -------------- hour (0-23)
+//| | ------------ day of month (1-31 ,or L)
+//| | | ---------- month (1-12, JAN-DEC)
+//| | | | -------- day of week (0-6, SUN-SAT,or L)
+//| | | | |
+//| | | | |
+//* * * * *
+
+---------------------------------------------------
+--you must use the word CRON
+-- there are total 5 asterisk sign followed by the time zone
+-- If all the 5 asterisk are no replaced by a numeric values, then the task will run every minute.
+
+--This will run the task every minute on sunday
+create or replace task task_every_min
+warehouse = compute_wh
+schedule = 'USING CRON * * * * SUN America/Los_Angeles'
+as
+insert into customer_dim(id, first_name, last_name, date_of_birbh, active_flag, city)
+values(customer_seq.nextval, 'F-name','L-name' ,current_date() ,TRUE ,'My-City');
+
+show tasks;
+
+alter task task_every_min resume;
+
+--checking the task history
+select * from table(information_schema.task_history()) where name = 'TASK_EVERY_MIN' order by scheduled_time;
+
+alter task task_every_min suspend;
+
+--if you need it to run every 5th minute
+create or replace task task_every_5th_min
+warehouse = compute_wh
+schedule = 'USING CRON 5 * * * SUN America/Los_Angeles'
+as
+insert into customer_dim(id, first_name, last_name, date_of_birbh, active_flag, city)
+values(customer_seq.nextval, 'F-name','L-name' ,current_date() ,TRUE ,'My-City');
+
+alter task task_every_5th_min resume;
+
+
+select * from table(information_schema.task_history()) where name = 'TASK_EVERY_5TH_MIN' order by scheduled_time;
+
+alter task task_every_5th_min suspend;
+
+--now we want task to run every 15th minute between 9 to 17 hrs on every sunday.
+--It is excluding the 9th hr and 17th hr
+create or replace task task_every_15_9_17_miniute
+warehouse = compute_wh
+schedule = 'USING CRON 15 9-17 * * SUN America/Los_Angeles'
+as
+insert into customer_dim(id, first_name, last_name, date_of_birbh, active_flag, city)
+values(customer_seq.nextval, 'F-name','L-name' ,current_date() ,TRUE ,'My-City');
+
+show tasks;
+
+---------------------------------------------------------------------------------------------
+--Now we will understand the warehouse parameter
+--how it will behave if we enter the non-existent warehouse
+create or replace task task_non_exist
+warehouse = non_exist_wh
+schedule = '1 minute'
+as
+insert into customer_dim(id, first_name, last_name, date_of_birbh, active_flag, city)
+values(customer_seq.nextval, 'F-name','L-name' ,current_date() ,TRUE ,'My-City');
+--it will throw the error
+--Nonexistent warehouse NON_EXIST_WH was specified.
+
+--now we will create a task which runs on serverless mode means that we will not specify the warehouse name.
+--for this kind of task you should have EXECUTE MANAGED TASK priviledges
+--this is called serverless task
+create or replace task task_non_exist
+user_task_managed_initial_warehouse_size = 'XSMALL'
+schedule = '1 minute'
+as
+insert into customer_dim(id, first_name, last_name, date_of_birbh, active_flag, city)
+values(customer_seq.nextval, 'F-name','L-name' ,current_date() ,TRUE ,'My-City');
+
+show tasks;
+
+---------------------------------------------------------------------------
+--Now we will understand task tree
+//                     (Parent                 task)
+//                    /                             \ 
+//             (child task 01)                     (child task 02)
+//             /           \                      /               \
+//     (child task 03)    (child task 04)    (child task 05)     (child task 06)
+
+create or replace task parent_task
+warehouse = compute_wh
+schedule = '1 minute'
+as
+insert into customer_dim(id, first_name, last_name, date_of_birbh, active_flag, city)
+values(customer_seq.nextval, 'F-name','L-name' ,current_date() ,TRUE ,'My-City');
+
+--the child task should not have the schedule since it will run just after the parent task
+create or replace task child_task_01
+warehouse = compute_wh
+AFTER parent_task
+as
+insert into customer_dim(id, first_name, last_name, date_of_birbh, active_flag, city)
+values(customer_seq.nextval, 'F-name','L-name' ,current_date() ,TRUE ,'My-City');
+
+create or replace task child_task_02
+warehouse = compute_wh
+AFTER parent_task
+as
+insert into customer_dim(id, first_name, last_name, date_of_birbh, active_flag, city)
+values(customer_seq.nextval, 'F-name','L-name' ,current_date() ,TRUE ,'My-City');
+
+create or replace task child_task_03
+warehouse = compute_wh
+AFTER child_task_01
+as
+insert into customer_dim(id, first_name, last_name, date_of_birbh, active_flag, city)
+values(customer_seq.nextval, 'F-name','L-name' ,current_date() ,TRUE ,'My-City');
+
+create or replace task child_task_04
+warehouse = compute_wh
+AFTER child_task_01
+as
+insert into customer_dim(id, first_name, last_name, date_of_birbh, active_flag, city)
+values(customer_seq.nextval, 'F-name','L-name' ,current_date() ,TRUE ,'My-City');
+
+create or replace task child_task_05
+warehouse = compute_wh
+AFTER child_task_02
+as
+insert into customer_dim(id, first_name, last_name, date_of_birbh, active_flag, city)
+values(customer_seq.nextval, 'F-name','L-name' ,current_date() ,TRUE ,'My-City');
+
+create or replace task child_task_06
+warehouse = compute_wh
+AFTER child_task_02
+as
+insert into customer_dim(id, first_name, last_name, date_of_birbh, active_flag, city)
+values(customer_seq.nextval, 'F-name','L-name' ,current_date() ,TRUE ,'My-City');
+
+show tasks;
+
+--Note:- Parent should be run after resuming all the child tasks
+alter task child_task_01 suspend;
+alter task child_task_02 suspend;
+alter task child_task_03 suspend;
+alter task child_task_04 suspend;
+alter task child_task_05 suspend;
+alter task child_task_06 suspend;
+
+alter task parent_task suspend;
+
+select * from table(information_schema.task_history()) order by scheduled_time;
+-------------------------------------------------------------------------------------------
+
+--Now let's undestand stored procedure with task
+create or replace table customer_sproc(
+    id integer autoincrement,
+    task_name varchar,
+    insert_timestamp timestamp default current_timestamp(),
+    first_name varchar,
+    last_name varchar,
+    date_of_birbh date,
+    active_flag boolean,
+    city varchar
+)
+comment = 'my customer table for task with stored procedure demo';
+
+--creating a stored procedure with single inert statement
+CREATE OR REPLACE PROCEDURE insert_row_in_customer_sproc()
+RETURNS Boolean
+LANGUAGE SQL
+AS
+$$
+BEGIN
+    insert into customer_sproc(task_name, first_name, last_name, date_of_birbh, active_flag, city)
+values('TASK_WITH_SPROC', 'F-name','L-name' ,current_date() ,TRUE ,'My-City');
+END;
+$$
+;
+
+--calling the sp to check if it runs
+call insert_row_in_customer_sproc();
+
+select * from customer_sproc;
+
+--task calling a stored procedure
+create or replace task task_with_sproc
+warehouse = compute_wh
+schedule = '1 minute'
+as
+call insert_row_in_customer_sproc();
+
+alter task task_with_sproc resume;
+
+show tasks;
+
+--lets check task_history function
+select * from table(information_schema.task_history()) where name = 'TASK_WITH_SPROC' order by scheduled_time;
+
+alter task task_with_sproc suspend;
